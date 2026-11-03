@@ -12,6 +12,7 @@ from recipe import (
     TIME_OPTIONS,
     list_free_text_models_detailed,
 )
+from ui_common import DB_UNAVAILABLE_MESSAGE, escape_markdown
 from vision import list_free_vision_models_detailed
 
 st.set_page_config(page_title="프로필", page_icon="👤")
@@ -21,10 +22,24 @@ st.title("👤 프로필")
 
 user = current_user()
 if not user:
-    st.info("로그인 후 프로필을 확인할 수 있습니다. 왼쪽 사이드바에서 로그인/회원가입해주세요.")
+    st.info("로그인 후 프로필을 확인할 수 있습니다. 왼쪽 사이드바에서 로그인/회원가입해 주세요.")
     st.stop()
 
-st.write(f"**이메일**: {user['email']}")
+# 닉네임 변경처럼 저장 직후 st.rerun()하는 경우, 완료 알림을 다음 실행에서 보여준다.
+profile_notice = st.session_state.pop("profile_notice", None)
+if profile_notice:
+    st.toast(profile_notice, icon="✅")
+
+try:
+    saved = db.get_user_by_id(user["id"])
+except db.DatabaseError:
+    st.error(DB_UNAVAILABLE_MESSAGE)
+    st.stop()
+if not saved:
+    st.error("계정 정보를 찾을 수 없습니다. 사이드바에서 로그아웃한 뒤 다시 로그인해 주세요.")
+    st.stop()
+
+st.write(f"**이메일**: {escape_markdown(user['email'])}")
 
 with st.form("profile_form"):
     new_nickname = st.text_input("닉네임", value=user["nickname"])
@@ -32,18 +47,20 @@ with st.form("profile_form"):
     if submitted:
         new_nickname = new_nickname.strip()
         if not new_nickname:
-            st.error("닉네임을 입력해주세요.")
+            st.error("닉네임을 입력해 주세요.")
         else:
-            db.update_nickname(user["id"], new_nickname)
-            st.session_state.current_user["nickname"] = new_nickname
-            st.success("닉네임이 변경되었습니다.")
-            st.rerun()
+            try:
+                db.update_nickname(user["id"], new_nickname)
+            except db.DatabaseError:
+                st.error("닉네임을 변경하지 못했습니다. " + DB_UNAVAILABLE_MESSAGE)
+            else:
+                st.session_state.current_user["nickname"] = new_nickname
+                st.session_state.profile_notice = "닉네임이 변경되었습니다."
+                st.rerun()
 
 st.divider()
 st.subheader("🍳 레시피 추천 기본값")
 st.caption("여기서 설정한 값이 레시피 추천 화면(3단계)의 기본 선택값으로 채워집니다. 그 화면에서 매번 다시 바꿀 수 있습니다.")
-
-saved = db.get_user_by_id(user["id"])
 
 
 def _index(saved_value, options):
@@ -66,13 +83,18 @@ with st.form("recipe_preference_form"):
     )
     pref_submitted = st.form_submit_button("기본값 저장")
     if pref_submitted:
-        db.update_recipe_preferences(user["id"], pref_cuisine, pref_difficulty, pref_time, pref_servings)
-        st.success("레시피 추천 기본값이 저장되었습니다.")
+        try:
+            db.update_recipe_preferences(user["id"], pref_cuisine, pref_difficulty, pref_time, pref_servings)
+        except db.DatabaseError:
+            st.error("기본값을 저장하지 못했습니다. " + DB_UNAVAILABLE_MESSAGE)
+        else:
+            st.success("레시피 추천 기본값이 저장되었습니다.")
 
 st.divider()
 st.subheader("🤖 AI 모델 선택")
 st.caption(
-    "체크한 모델만 식재료 인식/레시피 생성 시 무작위로 시도합니다. "
+    "체크한 모델만 식재료 인식/레시피 생성에 사용합니다. 실제로 잘 동작한 것으로 확인된 모델을 먼저 시도하고, "
+    "나머지는 무작위 순서로 시도합니다. "
     "하나도 선택하지 않고 저장하면 전체 무료 모델을 사용합니다. "
     "(오픈라우터가 공개하지 않는 응답 속도/처리량 정보는 표시할 수 없어 이름·컨텍스트·출시일만 보여줍니다.)"
 )
@@ -126,7 +148,7 @@ saved_text_ids = db.parse_model_id_list(saved.get("selected_text_models"))
 
 st.markdown("**식재료 인식(이미지) 모델**")
 if not vision_entries:
-    st.warning("현재 오픈라우터에서 무료 비전 모델 목록을 가져오지 못했습니다. 잠시 후 다시 시도해주세요.")
+    st.warning("현재 오픈라우터에서 무료 비전 모델 목록을 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
     edited_vision = None
 else:
     edited_vision = st.data_editor(
@@ -153,5 +175,9 @@ else:
 if st.button("모델 선택 저장"):
     new_vision_ids = _selected_ids(vision_entries, edited_vision) if edited_vision is not None else saved_vision_ids
     new_text_ids = _selected_ids(text_entries, edited_text) if edited_text is not None else saved_text_ids
-    db.update_model_selection(user["id"], new_vision_ids or [], new_text_ids or [])
-    st.success("모델 선택이 저장되었습니다.")
+    try:
+        db.update_model_selection(user["id"], new_vision_ids or [], new_text_ids or [])
+    except db.DatabaseError:
+        st.error("모델 선택을 저장하지 못했습니다. " + DB_UNAVAILABLE_MESSAGE)
+    else:
+        st.success("모델 선택이 저장되었습니다.")
