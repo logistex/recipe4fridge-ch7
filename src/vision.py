@@ -173,7 +173,8 @@ def _has_ingredients(response):
     try:
         choices = response.json().get("choices")
         return bool(choices) and parse_ingredients(choices[0]["message"]["content"]) is not None
-    except ValueError:
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        # content가 null(빈 응답)이거나 형식이 다르면 실패한 시도로 보고 다음 모델로 넘어간다.
         return False
 
 

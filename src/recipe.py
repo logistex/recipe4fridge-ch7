@@ -146,7 +146,8 @@ def _has_korean_recipes(response):
             return False
         recipes = parse_recipes(choices[0]["message"]["content"])
         return bool(recipes) and _is_korean_enough(recipes)
-    except ValueError:
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        # content가 null(빈 응답)이거나 형식이 다르면 실패한 시도로 보고 다음 모델로 넘어간다.
         return False
 
 
