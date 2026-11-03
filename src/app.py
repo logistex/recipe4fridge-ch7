@@ -47,6 +47,13 @@ WIZARD_STEP_LABELS = ["① 사진 업로드", "② 식재료 확인", "③ 레�
 RECIPE_CARDS_PER_ROW = 3
 # 기술 정보 expander에 보여줄 응답 본문 최대 길이.
 TECH_DETAIL_MAX_CHARS = 2000
+# 재료 편집기 한 줄(이름/수량/단위/삭제·추가)의 기본 비율. 실제 폭은 아래 LAYOUT_CSS가 다시 정한다.
+INGREDIENT_ROW_SPEC = [2.5, 2, 1.5, 1.2]
+# 레이아웃 CSS의 범위를 잡는 st.container key (.st-key-<key> 클래스로 렌더링된다).
+# 위젯 key가 아니라 session_state에 들어가지 않지만, 혼동을 피하려고 "ingredient_" 접두사는 쓰지 않는다.
+INGREDIENT_EDITOR_KEY = "editor_ingredients"
+TWO_PANE_KEY = "wizard_two_pane"
+HEADER_KEY = "app_header"
 
 # 손상되었거나 이미지가 아닌 파일을 열 때 Pillow가 내는 예외들.
 IMAGE_ERRORS = (UnidentifiedImageError, OSError, ValueError, SyntaxError, Image.DecompressionBombError)
@@ -312,6 +319,12 @@ def render_ingredient_editor():
 
     재료 한 개당 한 줄(이름/수량/단위/삭제)로 배치한다 (추가 폼과 동일한 형태).
     """
+    # 좁은 화면에서도 한 줄(이름/수량/단위/삭제)이 유지되도록 이 컨테이너 안의 줄에만 CSS를 건다.
+    with st.container(key=INGREDIENT_EDITOR_KEY):
+        _render_ingredient_editor_body()
+
+
+def _render_ingredient_editor_body():
     st.subheader("② 식재료 확인")
     st.caption("⚠️ AI 인식 결과는 부정확할 수 있습니다. 이름/수량/단위를 확인하고 필요하면 직접 수정해 주세요.")
 
@@ -327,7 +340,9 @@ def render_ingredient_editor():
         # 이전(다른 재료) 값을 그대로 들고 있어서, 중간 삭제 시 엉뚱한(마지막) 항목이
         # 사라진 것처럼 보이는 문제가 있었다.
         item_id = item.setdefault("_id", uuid.uuid4().hex)
-        col_name, col_qty, col_unit, col_delete = st.columns([2.5, 2, 1.5, 1.2])
+        col_name, col_qty, col_unit, col_delete = st.columns(
+            INGREDIENT_ROW_SPEC, gap="xsmall", vertical_alignment="center"
+        )
         item["name"] = col_name.text_input(
             "이름", value=item["name"], key=f"ingredient_name_{item_id}", label_visibility="collapsed"
         )
@@ -356,7 +371,9 @@ def render_ingredient_editor():
         st.rerun()
 
     with st.form("add_ingredient_form", clear_on_submit=True):
-        col_name, col_qty, col_unit, col_add = st.columns([2.5, 2, 1.5, 1.2])
+        col_name, col_qty, col_unit, col_add = st.columns(
+            INGREDIENT_ROW_SPEC, gap="xsmall", vertical_alignment="center"
+        )
         new_name = col_name.text_input("재료 이름", label_visibility="collapsed", placeholder="재료 이름")
         new_qty = col_qty.number_input("수량", min_value=0, step=1, value=1, label_visibility="collapsed")
         new_unit = col_unit.selectbox("단위", UNIT_OPTIONS, label_visibility="collapsed")
@@ -417,6 +434,70 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# 좁은 화면 레이아웃 보정. 선택자는 Streamlit 1.66 DOM 기준이며(.st-key-<key> 컨테이너 >
+# stLayoutWrapper > stHorizontalBlock > stColumn), 각 규칙은 key로 지정한 영역에만 걸린다.
+LAYOUT_CSS = """
+<style>
+/* 2·3단계 좌우 2단: 한 칸이 22rem보다 좁아지면(사이드바를 연 800px 창 등) 위아래로 쌓는다.
+   넓은 화면에서는 기존처럼 좌우 배치 그대로다. */
+.st-key-TWO_PANE > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+.st-key-TWO_PANE > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: min(22rem, 100%);
+}
+/* 재료 한 줄: 모바일에서도 세로로 쌓지 않고, 단위 칸과 삭제·추가 버튼은 줄어들지 않게 폭을 고정한다.
+   남는 폭은 이름:수량 = 5:4로 나눈다. */
+.st-key-EDITOR [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap;
+}
+.st-key-EDITOR [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    width: auto;
+    min-width: 0;
+}
+.st-key-EDITOR [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(1) {
+    flex: 5 1 0;
+    min-width: 4.5rem;
+}
+.st-key-EDITOR [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) {
+    flex: 4 1 0;
+    min-width: 3.5rem;
+    max-width: 7.5rem;  /* 이 폭 이하면 Streamlit이 -/+ 버튼을 숨겨 "1000" 같은 숫자 칸이 넓어진다. */
+}
+/* 편집기 폭이 넉넉하면(30rem 이상) 수량 칸을 넓혀 -/+ 버튼을 보여 준다. 9.5rem 미만에서 버튼이 보이면
+   숫자 칸이 두 글자 남짓으로 좁아지므로 최소 폭을 함께 둔다. */
+.st-key-EDITOR {
+    container-type: inline-size;
+}
+@container (min-width: 30rem) {
+    .st-key-EDITOR [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) {
+        min-width: 9.5rem;
+        max-width: none;
+    }
+}
+.st-key-EDITOR [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(3) {
+    flex: 0 0 5.25rem;
+}
+.st-key-EDITOR [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(4) {
+    flex: 0 0 auto;
+}
+/* 제목 줄: "처음부터" 버튼 칸은 글자 폭만큼 확보하고, 제목은 단어 중간에서 줄바꿈하지 않는다.
+   640px 이하에서는 Streamlit 기본 동작대로 버튼이 제목 아래 줄로 내려간다. */
+.st-key-HEADER [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {
+    flex: 1 1 0;
+}
+.st-key-HEADER [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {
+    flex: 0 0 auto;
+    width: auto;
+}
+.st-key-HEADER h1 {
+    word-break: keep-all;
+}
+</style>
+"""
+st.markdown(
+    LAYOUT_CSS.replace("TWO_PANE", TWO_PANE_KEY).replace("EDITOR", INGREDIENT_EDITOR_KEY).replace("HEADER", HEADER_KEY),
+    unsafe_allow_html=True,
+)
+
 st.session_state.setdefault("uploader_key", 0)
 st.session_state.setdefault("wizard_step", 1)
 
@@ -425,7 +506,7 @@ def _do_restart():
     st.rerun()
 
 
-header_col, restart_col = st.columns([5, 1])
+header_col, restart_col = st.container(key=HEADER_KEY).columns([5, 1])
 header_col.title("🥬 냉장고 레시피 추천")
 with restart_col:
     has_progress = st.session_state.wizard_step > 1 or bool(st.session_state.get("ingredients"))
@@ -526,7 +607,7 @@ if wizard_step == 1:
 
 # ==================== 2단계 화면: 업로드한 사진(좌) + 식재료 확인(우) ====================
 elif wizard_step == 2:
-    photo_col, ingredient_col = st.columns(2)
+    photo_col, ingredient_col = st.container(key=TWO_PANE_KEY).columns(2)
 
     with photo_col:
         st.subheader("① 사진 업로드")
@@ -561,7 +642,7 @@ elif wizard_step == 2:
 
 # ==================== 3단계 화면: 식재료 확인(좌) + 레시피 추천(우) ====================
 elif wizard_step == 3:
-    ingredient_col, recipe_col = st.columns(2)
+    ingredient_col, recipe_col = st.container(key=TWO_PANE_KEY).columns(2)
 
     with ingredient_col:
         render_ingredient_editor()
