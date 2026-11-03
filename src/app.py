@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 import db
 from auth_ui import current_user, render_sidebar_auth
+from openrouter import error_info, is_daily_rate_limit
 from recipe import (
     CUISINE_OPTIONS,
     DIFFICULTY_OPTIONS,
@@ -60,16 +61,9 @@ def rate_limit_message(response, action):
     둘은 사용자가 할 일이 다르다. 일일 한도는 초기화될 때까지 다시 눌러도 소용없고,
     순간 혼잡은 잠시 뒤 다시 시도하면 대체로 풀린다.
     """
-    try:
-        error = (response.json() or {}).get("error") or {}
-    except ValueError:
-        error = {}
+    error = error_info(response)
     metadata = error.get("metadata") or {}
-    is_daily = (
-        "free-models-per-day" in str(error.get("message") or "")
-        or metadata.get("limit_source") == "openrouter_free_tier_daily"
-    )
-    if not is_daily:
+    if not is_daily_rate_limit(error):
         return (
             f"❌ {action} 실패: 무료 모델 3곳이 모두 혼잡합니다 (429). "
             "1~2분 뒤에 다시 시도해 주세요."

@@ -4,10 +4,8 @@ import re
 import time
 
 import requests
-import streamlit as st
 
-API_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODELS_URL = "https://openrouter.ai/api/v1/models"
+from openrouter import API_URL, REQUEST_TIMEOUT_SECONDS, fetch_models_payload, should_stop_retrying
 
 CUISINE_OPTIONS = ["상관없음", "한식", "양식", "중식", "일식"]
 DIFFICULTY_OPTIONS = ["상관없음", "초급", "중급", "고급"]
@@ -35,25 +33,13 @@ PREFERRED_RECIPE_MODELS = [
     "cohere/north-mini-code:free",
 ]
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _fetch_models_payload():
-    """오픈라우터 모델 목록 원본을 5분간 캐시한다.
-
-    실패하면 예외를 그대로 올려서 실패 결과가 캐시에 남지 않게 한다
-    (일시적인 네트워크 오류가 5분 동안 굳어지지 않도록).
-    """
-    response = requests.get(MODELS_URL, timeout=10)
-    response.raise_for_status()
-    return response.json().get("data", [])
-
-
 def _fetch_free_text_model_entries():
     """오픈라우터에서 레시피 생성에 쓸 수 있는 무료 모델의 원본 정보를 조회한다(5분 캐시).
 
     이미지 입력을 함께 받는 모델도 텍스트 프롬프트에 정상 응답하므로 제외하지 않는다.
     """
     try:
-        data = _fetch_models_payload()
+        data = fetch_models_payload()
     except (requests.exceptions.RequestException, ValueError):
         return []
 
@@ -151,7 +137,7 @@ def call_recipe_model(model, ingredient_names, api_key, **options):
             "model": model,
             "messages": [{"role": "user", "content": build_prompt(ingredient_names, **options)}],
         },
-        timeout=60,
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
 
 
@@ -190,11 +176,12 @@ def generate_recipes(ingredient_names, api_key, on_attempt=None, attempts=3, all
                         break
             except ValueError:
                 pass
+        elif should_stop_retrying(response):
+            break
         if i < len(models) - 1:
             # 429는 모델별 순간 혼잡이라 1초로는 잘 풀리지 않는다. 시도마다 대기를 늘린다.
             time.sleep(2 * (i + 1))
     return response, used_model
-
 
 _HANGUL_RE = re.compile(r"[가-힣]")
 

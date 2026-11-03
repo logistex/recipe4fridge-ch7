@@ -7,11 +7,10 @@ import time
 import uuid
 
 import requests
-import streamlit as st
 from PIL import Image
 
-API_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODELS_URL = "https://openrouter.ai/api/v1/models"
+from openrouter import API_URL, REQUEST_TIMEOUT_SECONDS, fetch_models_payload, should_stop_retrying
+
 MAX_IMAGE_DIMENSION = 1024
 # 화면 표시용 사진의 최대 폭. st.image가 표시 전에 줄이는 최대 폭(2 * 730)과 같게 맞춘다.
 DISPLAY_IMAGE_MAX_WIDTH = 1460
@@ -48,18 +47,6 @@ PREFERRED_VISION_MODELS = [
     "google/gemma-4-31b-it:free",
 ]
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _fetch_models_payload():
-    """오픈라우터 모델 목록 원본을 5분간 캐시한다.
-
-    실패하면 예외를 그대로 올려서 실패 결과가 캐시에 남지 않게 한다
-    (일시적인 네트워크 오류가 5분 동안 굳어지지 않도록).
-    """
-    response = requests.get(MODELS_URL, timeout=10)
-    response.raise_for_status()
-    return response.json().get("data", [])
-
-
 def _fetch_free_vision_model_entries():
     """오픈라우터에서 현재 사용 가능한 무료 비전(이미지 입력) 모델의 원본 정보를 조회한다.
 
@@ -67,7 +54,7 @@ def _fetch_free_vision_model_entries():
     조회 자체가 실패하면 빈 리스트를 반환한다 (호출부에서 안전망으로 대체).
     """
     try:
-        data = _fetch_models_payload()
+        data = fetch_models_payload()
     except (requests.exceptions.RequestException, ValueError):
         return []
 
@@ -180,7 +167,7 @@ def call_vision_model(model, data_uri, api_key):
                 }
             ],
         },
-        timeout=60,
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
 
 
@@ -219,11 +206,12 @@ def recognize_ingredients(data_uri, api_key, on_attempt=None, attempts=3, allowe
                     break
             except ValueError:
                 pass
+        elif should_stop_retrying(response):
+            break
         if i < len(models) - 1:
             # 429는 모델별 순간 혼잡이라 1초로는 잘 풀리지 않는다. 시도마다 대기를 늘린다.
             time.sleep(2 * (i + 1))
     return response, used_model
-
 
 def merge_duplicate_ingredients(ingredients):
     """이름이 같은(공백 제거, 대소문자 무시) 재료는 수량을 합쳐 하나로 합친다."""
