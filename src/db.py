@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -12,6 +13,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# 첫 연결(TCP+TLS)이 응답 없이 무한정 매달리지 않도록 하는 상한. libpq 기본값은 무제한이다.
+DB_CONNECT_TIMEOUT_SECONDS = 10
+# 풀에 반납된 지 이 시간이 안 된 커넥션은 살아있다고 보고 SELECT 1 점검(왕복 1회)을 건너뛴다.
+DB_PING_IF_IDLE_SECONDS = 30
+
 
 def _database_url():
     if os.environ.get("DATABASE_URL"):
@@ -21,6 +27,12 @@ def _database_url():
     except (FileNotFoundError, KeyError):
         st.error("DATABASE_URL이 설정되지 않았습니다. .env 또는 Streamlit secrets를 확인해주세요.")
         st.stop()
+
+
+class _TrackedConnection(psycopg2.extensions.connection):
+    """마지막으로 풀에 반납된 시각(last_used)을 기록할 수 있는 커넥션."""
+
+    last_used = 0.0
 
 
 @st.cache_resource
@@ -39,7 +51,9 @@ def _connection_pool():
         1,
         5,
         _database_url(),
+        connection_factory=_TrackedConnection,
         cursor_factory=psycopg2.extras.RealDictCursor,
+        connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
         keepalives=1,
         keepalives_idle=30,
         keepalives_interval=10,
@@ -53,10 +67,17 @@ def _checkout_live_connection():
 
     앱이 잠들었다 깨어나면 풀 안의 커넥션이 하나가 아니라 전부 같은 이유로 죽어 있다.
     그래서 커넥션 하나만 교체하지 않고 풀 전체를 폐기한다.
+
+    점검(SELECT 1)은 쿼리마다 DB 왕복을 한 번 더 늘리므로, 반납된 지
+    DB_PING_IF_IDLE_SECONDS가 안 된 커넥션은 점검 없이 바로 쓴다. 잠들었다 깨어난 경우는
+    유휴 시간이 길어 항상 점검 대상이 된다.
     """
     for last_attempt in (False, True):
         pool = _connection_pool()
         conn = pool.getconn()
+        idle_seconds = time.time() - conn.last_used
+        if not conn.closed and 0 <= idle_seconds < DB_PING_IF_IDLE_SECONDS:
+            return pool, conn
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
@@ -78,11 +99,13 @@ def get_connection():
         yield conn
         conn.commit()
     finally:
+        conn.last_used = time.time()
         # putconn은 트랜잭션이 남아있으면 롤백하고, 끊어진 커넥션은 닫아 풀에서 제거한다.
         pool.putconn(conn)
 
 
 def init_db():
+    # 앱 시작 시 DB 왕복을 한 번으로 줄이기 위해 스키마 문장을 하나로 묶어 보낸다.
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -93,22 +116,34 @@ def init_db():
                     password_hash TEXT,
                     nickname TEXT NOT NULL,
                     created_at TEXT NOT NULL
-                )
-                """
-            )
-            # Google 로그인 사용자는 비밀번호가 없으므로, 기존에 NOT NULL로 만들어진
-            # 테이블이 있다면 nullable로 완화한다 (이미 nullable이면 no-op).
-            cur.execute("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL")
-            # 레시피 추천 기본 조건(프로필에서 설정, 레시피 화면 기본값으로 사용).
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS default_cuisine TEXT")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS default_difficulty TEXT")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS default_time TEXT")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS default_servings TEXT")
-            # 사용자가 프로필에서 고른 AI 모델 목록(JSON 배열 문자열). NULL/빈 값이면 전체 무료 모델 사용.
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_vision_models TEXT")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_text_models TEXT")
-            cur.execute(
-                """
+                );
+
+                -- Google 로그인 사용자는 비밀번호가 없으므로, 기존에 NOT NULL로 만들어진
+                -- 테이블이 있다면 nullable로 완화한다. 이미 nullable이면 테이블 락이 걸리는
+                -- ALTER TABLE 자체를 실행하지 않는다.
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'users'
+                          AND column_name = 'password_hash'
+                          AND is_nullable = 'NO'
+                    ) THEN
+                        ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+                    END IF;
+                END $$;
+
+                -- 레시피 추천 기본 조건(프로필에서 설정, 레시피 화면 기본값으로 사용)과
+                -- 사용자가 프로필에서 고른 AI 모델 목록(JSON 배열 문자열. NULL/빈 값이면 전체 무료 모델 사용).
+                ALTER TABLE users
+                    ADD COLUMN IF NOT EXISTS default_cuisine TEXT,
+                    ADD COLUMN IF NOT EXISTS default_difficulty TEXT,
+                    ADD COLUMN IF NOT EXISTS default_time TEXT,
+                    ADD COLUMN IF NOT EXISTS default_servings TEXT,
+                    ADD COLUMN IF NOT EXISTS selected_vision_models TEXT,
+                    ADD COLUMN IF NOT EXISTS selected_text_models TEXT;
+
                 CREATE TABLE IF NOT EXISTS saved_recipes (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id),
@@ -118,7 +153,7 @@ def init_db():
                     steps TEXT,
                     cook_time_minutes INTEGER,
                     saved_at TEXT NOT NULL
-                )
+                );
                 """
             )
 
