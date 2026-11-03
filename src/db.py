@@ -18,6 +18,9 @@ DB_CONNECT_TIMEOUT_SECONDS = 10
 # 풀에 반납된 지 이 시간이 안 된 커넥션은 살아있다고 보고 SELECT 1 점검(왕복 1회)을 건너뛴다.
 DB_PING_IF_IDLE_SECONDS = 30
 
+# 화면 코드가 psycopg2를 직접 import하지 않고 DB 오류(연결 실패, 풀 고갈 포함)를 잡을 수 있게 한다.
+DatabaseError = psycopg2.Error
+
 
 def _database_url():
     if os.environ.get("DATABASE_URL"):
@@ -25,7 +28,7 @@ def _database_url():
     try:
         return st.secrets["DATABASE_URL"]
     except (FileNotFoundError, KeyError):
-        st.error("DATABASE_URL이 설정되지 않았습니다. .env 또는 Streamlit secrets를 확인해주세요.")
+        st.error("DATABASE_URL이 설정되지 않았습니다. .env 또는 Streamlit secrets를 확인해 주세요.")
         st.stop()
 
 
