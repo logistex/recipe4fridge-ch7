@@ -3,13 +3,12 @@ import io
 import json
 import random
 import re
-import time
 import uuid
 
 import requests
 from PIL import Image
 
-from openrouter import API_URL, REQUEST_TIMEOUT_SECONDS, fetch_models_payload, should_stop_retrying
+from openrouter import fetch_models_payload, post_chat, run_with_fallback
 
 MAX_IMAGE_DIMENSION = 1024
 # 화면 표시용 사진의 최대 폭. st.image가 표시 전에 줄이는 최대 폭(2 * 730)과 같게 맞춘다.
@@ -151,11 +150,9 @@ def to_display_bytes(image_bytes):
     return buffer.getvalue()
 
 
-def call_vision_model(model, data_uri, api_key):
-    return requests.post(
-        API_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
+def call_vision_model(model, data_uri, api_key, deadline_seconds):
+    return post_chat(
+        {
             "model": model,
             "messages": [
                 {
@@ -167,15 +164,24 @@ def call_vision_model(model, data_uri, api_key):
                 }
             ],
         },
-        timeout=REQUEST_TIMEOUT_SECONDS,
+        api_key,
+        deadline_seconds,
     )
+
+
+def _has_ingredients(response):
+    try:
+        choices = response.json().get("choices")
+        return bool(choices) and parse_ingredients(choices[0]["message"]["content"]) is not None
+    except ValueError:
+        return False
 
 
 def recognize_ingredients(data_uri, api_key, on_attempt=None, attempts=3, allowed_models=None):
     """매 시도마다 오픈라우터의 현재 무료 비전 모델 중 서로 다른 모델을 순서대로 시도한다.
 
     실측 우선순위(PREFERRED_VISION_MODELS)가 앞에 오고, 아직 실측하지 않은 모델이
-    무작위 순서로 뒤를 잇는다. 429(요청 폭주)든 JSON 파싱 실패든 실패로 간주하고,
+    무작위 순서로 뒤를 잇는다. 429(요청 폭주)든 JSON 파싱 실패든 시간 초과든 실패로 간주하고,
     성공(재료 목록을 얻을 때)할 때까지 또는 attempts 횟수만큼 다음 모델로 넘어간다.
     고정된 "폴백 모델" 개념 대신, 매 시도 자체가 서로 다른 모델이라 폴백 역할을 겸한다.
 
@@ -190,28 +196,13 @@ def recognize_ingredients(data_uri, api_key, on_attempt=None, attempts=3, allowe
     else:
         models = [random.choice(SAFETY_NET_VISION_MODELS) for _ in range(attempts)]
 
-    response = None
-    used_model = models[0]
-    for i, model in enumerate(models):
-        label = f"{i + 1}차 시도"
-        if on_attempt is not None:
-            on_attempt(label, model)
-        response = call_vision_model(model, data_uri, api_key)
-        used_model = model
-        if response.status_code == 200:
-            try:
-                body = response.json()
-                choices = body.get("choices")
-                if choices and parse_ingredients(choices[0]["message"]["content"]) is not None:
-                    break
-            except ValueError:
-                pass
-        elif should_stop_retrying(response):
-            break
-        if i < len(models) - 1:
-            # 429는 모델별 순간 혼잡이라 1초로는 잘 풀리지 않는다. 시도마다 대기를 늘린다.
-            time.sleep(2 * (i + 1))
-    return response, used_model
+    return run_with_fallback(
+        models,
+        lambda model, deadline: call_vision_model(model, data_uri, api_key, deadline),
+        _has_ingredients,
+        on_attempt,
+    )
+
 
 def merge_duplicate_ingredients(ingredients):
     """이름이 같은(공백 제거, 대소문자 무시) 재료는 수량을 합쳐 하나로 합친다."""

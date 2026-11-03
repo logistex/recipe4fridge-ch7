@@ -313,7 +313,7 @@ if wizard_step == 1:
                         )
                     except requests.exceptions.Timeout:
                         status.update(label="분석 실패", state="error")
-                        st.session_state.recognition_error = "❌ 식재료 인식 실패: 요청이 시간 초과되었습니다. 잠시 후 다시 시도해주세요."
+                        st.session_state.recognition_error = "❌ 식재료 인식 실패: 모델이 제한 시간 안에 응답하지 않았습니다. 잠시 후 다시 시도해주세요."
                         st.rerun()
                     except requests.exceptions.RequestException as e:
                         status.update(label="분석 실패", state="error")
@@ -480,7 +480,7 @@ elif wizard_step == 3:
                     status.update(label="생성 실패", state="error")
                     st.session_state.pop("recipes", None)
                     st.session_state.pop("selected_recipe", None)
-                    st.error("❌ 레시피 생성 실패: 요청이 시간 초과되었습니다. 잠시 후 다시 시도해주세요.")
+                    st.error("❌ 레시피 생성 실패: 모델이 제한 시간 안에 응답하지 않았습니다. 잠시 후 다시 시도해주세요.")
                     st.stop()
                 except requests.exceptions.RequestException as e:
                     status.update(label="생성 실패", state="error")

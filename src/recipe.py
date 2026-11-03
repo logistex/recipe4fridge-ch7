@@ -1,11 +1,10 @@
 import json
 import random
 import re
-import time
 
 import requests
 
-from openrouter import API_URL, REQUEST_TIMEOUT_SECONDS, fetch_models_payload, should_stop_retrying
+from openrouter import fetch_models_payload, post_chat, run_with_fallback
 
 CUISINE_OPTIONS = ["상관없음", "한식", "양식", "중식", "일식"]
 DIFFICULTY_OPTIONS = ["상관없음", "초급", "중급", "고급"]
@@ -129,23 +128,33 @@ def build_prompt(ingredient_names, cuisine=None, difficulty=None, time_pref=None
     )
 
 
-def call_recipe_model(model, ingredient_names, api_key, **options):
-    return requests.post(
-        API_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
+def call_recipe_model(model, ingredient_names, api_key, deadline_seconds, **options):
+    return post_chat(
+        {
             "model": model,
             "messages": [{"role": "user", "content": build_prompt(ingredient_names, **options)}],
         },
-        timeout=REQUEST_TIMEOUT_SECONDS,
+        api_key,
+        deadline_seconds,
     )
+
+
+def _has_korean_recipes(response):
+    try:
+        choices = response.json().get("choices")
+        if not choices:
+            return False
+        recipes = parse_recipes(choices[0]["message"]["content"])
+        return bool(recipes) and _is_korean_enough(recipes)
+    except ValueError:
+        return False
 
 
 def generate_recipes(ingredient_names, api_key, on_attempt=None, attempts=3, allowed_models=None, **options):
     """매 시도마다 오픈라우터의 현재 무료 텍스트 모델 중 서로 다른 모델을 순서대로 시도한다.
 
     실측 우선순위(PREFERRED_RECIPE_MODELS)가 앞에 오고, 아직 실측하지 않은 모델이
-    무작위 순서로 뒤를 잇는다. 429든 JSON 파싱 실패든 한국어가 아닌 응답이든 실패로
+    무작위 순서로 뒤를 잇는다. 429든 JSON 파싱 실패든 한국어가 아닌 응답이든 시간 초과든 실패로
     간주하고, 성공할 때까지 또는 attempts 횟수만큼 다음 모델로 넘어간다 (별도의 고정
     폴백 모델 없이, 매 시도 자체가 폴백 역할을 겸함).
     allowed_models: 사용자가 프로필에서 선택한 모델 id 목록. 없으면 전체 무료 모델을 대상으로 한다.
@@ -158,30 +167,13 @@ def generate_recipes(ingredient_names, api_key, on_attempt=None, attempts=3, all
     else:
         models = [random.choice(SAFETY_NET_RECIPE_MODELS) for _ in range(attempts)]
 
-    response = None
-    used_model = models[0]
-    for i, model in enumerate(models):
-        label = f"{i + 1}차 시도"
-        if on_attempt is not None:
-            on_attempt(label, model)
-        response = call_recipe_model(model, ingredient_names, api_key, **options)
-        used_model = model
-        if response.status_code == 200:
-            try:
-                body = response.json()
-                choices = body.get("choices")
-                if choices:
-                    recipes = parse_recipes(choices[0]["message"]["content"])
-                    if recipes and _is_korean_enough(recipes):
-                        break
-            except ValueError:
-                pass
-        elif should_stop_retrying(response):
-            break
-        if i < len(models) - 1:
-            # 429는 모델별 순간 혼잡이라 1초로는 잘 풀리지 않는다. 시도마다 대기를 늘린다.
-            time.sleep(2 * (i + 1))
-    return response, used_model
+    return run_with_fallback(
+        models,
+        lambda model, deadline: call_recipe_model(model, ingredient_names, api_key, deadline, **options),
+        _has_korean_recipes,
+        on_attempt,
+    )
+
 
 _HANGUL_RE = re.compile(r"[가-힣]")
 
