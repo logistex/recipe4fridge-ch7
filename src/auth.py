@@ -8,13 +8,22 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 GENERIC_LOGIN_ERROR = "이메일 또는 비밀번호가 올바르지 않습니다."
 
+PASSWORD_MIN_LENGTH = 8
+# bcrypt는 72바이트까지만 처리한다(5.x는 넘으면 ValueError). 한글은 글자당 3바이트라 24자까지다.
+PASSWORD_MAX_BYTES = 72
+PASSWORD_RULE_HELP = "8자 이상, 영문·숫자 기준 72자 이하(한글은 24자 이하)로 입력해 주세요."
+
 
 def hash_password(password):
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(password, password_hash):
-    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        # 72바이트를 넘는 입력은 가입 단계에서 막히므로, 여기로 왔다면 틀린 비밀번호로 본다.
+        return False
 
 
 def signup(email, password, nickname):
@@ -24,10 +33,12 @@ def signup(email, password, nickname):
 
     if not EMAIL_PATTERN.match(email):
         return False, "올바른 이메일 형식이 아닙니다."
-    if len(password) < 8:
-        return False, "비밀번호는 8자 이상이어야 합니다."
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return False, f"비밀번호는 {PASSWORD_MIN_LENGTH}자 이상이어야 합니다."
+    if len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        return False, "비밀번호가 너무 깁니다. 영문·숫자 기준 72자 이하(한글은 24자 이하)로 입력해 주세요."
     if not nickname:
-        return False, "닉네임을 입력해주세요."
+        return False, "닉네임을 입력해 주세요."
     if db.email_exists(email):
         return False, "이미 가입된 이메일입니다."
 
