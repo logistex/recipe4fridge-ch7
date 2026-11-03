@@ -24,6 +24,7 @@ from vision import (
     merge_duplicate_ingredients,
     parse_ingredients,
     recognize_ingredients,
+    to_display_bytes,
     to_resized_data_uri,
 )
 
@@ -299,7 +300,8 @@ if wizard_step == 1:
                 st.session_state.pop("ingredients", None)
                 st.session_state.pop("recipes", None)
                 st.session_state.pop("selected_recipe", None)
-                st.session_state.uploaded_photo_bytes = uploaded_file.getvalue()
+                # 2단계에서 리런마다 원본을 다시 줄이지 않도록 표시용 크기로 한 번만 줄여 보관한다.
+                st.session_state.uploaded_photo_bytes = to_display_bytes(uploaded_file.getvalue())
                 st.session_state.uploaded_photo_name = uploaded_file.name
 
                 with st.status("사진을 분석하는 중입니다...", expanded=True) as status:

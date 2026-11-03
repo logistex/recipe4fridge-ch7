@@ -13,6 +13,8 @@ from PIL import Image
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_URL = "https://openrouter.ai/api/v1/models"
 MAX_IMAGE_DIMENSION = 1024
+# 화면 표시용 사진의 최대 폭. st.image가 표시 전에 줄이는 최대 폭(2 * 730)과 같게 맞춘다.
+DISPLAY_IMAGE_MAX_WIDTH = 1460
 UNIT_OPTIONS = ["개", "병", "봉지", "팩", "단", "g", "kg", "ml", "L", "기타"]
 RECOGNITION_PROMPT = (
     '이 냉장고 사진에서 보이는 식재료를 한국어로 인식해서 JSON 배열 형식으로만 답해줘. '
@@ -125,13 +127,41 @@ def list_free_vision_models_detailed():
 
 def to_resized_data_uri(file_like):
     """이미지를 긴 변 기준 MAX_IMAGE_DIMENSION 이하로 축소해 base64 data URI로 변환한다."""
-    image = Image.open(file_like).convert("RGB")
+    image = Image.open(file_like)
+    # JPEG는 디코딩 단계에서 1/2~1/8로 줄여 읽는다 (원본 전체를 RGB로 풀지 않아 몇 배 빠름).
+    # 목표 크기 이상으로만 줄이므로 최종 축소는 아래 thumbnail이 그대로 담당한다. PNG는 영향 없음.
+    image.draft("RGB", (MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
+    image = image.convert("RGB")
     image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=85)
     resized_bytes = buffer.getvalue()
     b64 = base64.b64encode(resized_bytes).decode()
     return f"data:image/jpeg;base64,{b64}", len(resized_bytes)
+
+
+def to_display_bytes(image_bytes):
+    """화면 표시용 사진을 폭 DISPLAY_IMAGE_MAX_WIDTH 이하로 미리 줄여둔다.
+
+    st.image는 원본 bytes를 받으면 리런마다 디코딩·축소·재인코딩을 반복한다(12MP 사진 기준
+    수백 ms). 2단계에서는 재료를 고칠 때마다 리런되므로, 한 번만 줄여 session_state에 둔다.
+    줄인 결과는 st.image가 손대지 않고 그대로 표시한다 (폭과 형식이 이미 맞으므로).
+    """
+    image = Image.open(io.BytesIO(image_bytes))
+    if image.width <= DISPLAY_IMAGE_MAX_WIDTH:
+        return image_bytes
+    new_height = int(image.height * DISPLAY_IMAGE_MAX_WIDTH / image.width)
+    # st.image와 같은 기준으로 형식을 고른다 (투명도가 있을 수 있으면 PNG, 아니면 JPEG).
+    if image.mode in {"RGBA", "LA", "P"}:
+        image_format = "PNG"
+    else:
+        image_format = "JPEG"
+        image.draft("RGB", (DISPLAY_IMAGE_MAX_WIDTH, new_height))
+        image = image.convert("RGB")
+    image = image.resize((DISPLAY_IMAGE_MAX_WIDTH, new_height), resample=Image.BILINEAR)
+    buffer = io.BytesIO()
+    image.save(buffer, format=image_format, quality=90)
+    return buffer.getvalue()
 
 
 def call_vision_model(model, data_uri, api_key):
